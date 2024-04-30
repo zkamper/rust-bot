@@ -1,0 +1,26 @@
+[
+    {
+        "question":"**Q1** Who was the first actor to portray the Doctor in the classic series?\na.William Hartnell\nb.Johnny Cage\nc.Brad Pitt\nd.Selena Gomez",
+        "answer":"a"
+    },
+    {
+        "question":"**Q2** What is the name of the Doctor's time-travelling spaceship?\na.Falcon 9\nb. TARDIS (Time and Relative Dimension in Space)\nc.VORTEX (Voyager of Reality and Time Exploration)\nd.CHRONO (Chronicle of Historical and Navigational Observations)",
+        "answer":"b"
+    },
+    {
+        "question":"**Q3** Which alien race is known for their pepper-pot-shaped robotic appearance\na.Roboquillians\nb.Martians\nc.Daleks\nd.Na'vi",
+        "answer":"c"
+    },
+    {
+        "question":"**Q4** In which episode did David Tennant's Tenth Doctor regenerate into Matt Smith's Eleventh Doctor?\na.\"The Time of the Timelords\"\nb.\"The End of Time: Part 2\"\nc.\"Farewell in the Stars\"\nd.\"Pilot\"",
+        "answer":"b"
+    },
+    {
+        "question":"**Q5** What is the name of the Doctor's home planet?\na.Baldur\nb.Earth\nc.Teyvat\nd.Gallifrey",
+        "answer":"d"
+    },
+    {
+        "question":"**Q6** What is the name of the Doctor's iconic sonic screwdriver used for various tasks and unlocking doors?\na.Sonic Screwdriver\nb.Timey Twirler\nc.Sonic Spanner\nd.Temporal Gadget",
+        "answer":"a"
+    }
+]

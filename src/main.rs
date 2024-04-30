@@ -1,28 +1,103 @@
+use crate::commands::points::send_trivia;
+use clap::{Parser, Subcommand};
+use commands::doctor::doctor_cmd_response;
+use commands::episode::{episode_cmd_response, Episode};
+use commands::points::{points_cmd_response, update_user_points, Question};
+use commands::quote::quote_cmd_response;
 use dotenv::dotenv;
-use rand::Rng;
-use rusqlite::{params, Connection};
-use serde_json::Value;
-use std::{env, fs};
-use ureq::json;
-
-use serde::{Deserialize, Serialize};
+use rusqlite::{params, Connection, Statement};
 use serenity::all::ResolvedValue::{self, Integer};
-use serenity::all::{CommandOptionType, GuildId, Interaction};
+use serenity::all::{ChannelType, CommandOptionType, Interaction, Message};
 use serenity::async_trait;
 use serenity::builder::{
-    CreateAttachment, CreateCommand, CreateCommandOption, CreateEmbed, CreateInteractionResponse,
-    CreateInteractionResponseMessage, EditInteractionResponse,
+    CreateCommand, CreateCommandOption, CreateInteractionResponse,
+    CreateInteractionResponseMessage, EditInteractionResponse, EditMessage,
 };
 use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 use serenity::Client;
+use std::time::Duration;
+use std::{env, fs};
+use tokio::time::sleep;
+mod commands;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct Quote {
-    quote: String,
-    author: String,
+// Verify integrity function
+fn verify_integrity() -> u8 {
+    let mut verify_integrity: u8 = 0;
+    match env::var("DISCORD_TOKEN") {
+        Ok(_) => {
+            println!("✅Token found in .env");
+        }
+        Err(_) => {
+            println!("Token not found in .env");
+            verify_integrity += 1;
+        }
+    }
+    match env::var("RAPID_API") {
+        Ok(_) => {
+            println!("✅API key found in .env");
+        }
+        Err(_) => {
+            println!("API key not found in .env");
+            verify_integrity += 1;
+        }
+    }
+    match env::var("CLIENT_ID") {
+        Ok(_) => {
+            println!("✅Client ID found in .env");
+        }
+        Err(_) => {
+            println!("❌Client ID not found in .env");
+            verify_integrity += 1;
+        }
+    }
+    match fs::read_to_string("questions.json") {
+        Ok(_) => {
+            println!("✅questions.json found");
+        }
+        Err(_) => {
+            println!("❌questions.json not found");
+            verify_integrity += 1;
+        }
+    }
+    match fs::read_to_string("episodes.json") {
+        Ok(_) => {
+            println!("✅episodes.json found");
+        }
+        Err(_) => {
+            println!("❌episodes.json not found");
+            verify_integrity += 1;
+        }
+    }
+    match fs::read_to_string("quotes.json") {
+        Ok(_) => {
+            println!("✅quotes.json found");
+        }
+        Err(_) => {
+            println!("❌quotes.json not found, Bot can't send quotes");
+            verify_integrity += 1;
+        }
+    }
+    verify_integrity
 }
 
+// Handler for gateway events
+struct Handler;
+
+// Parser for cmd line arguments
+#[derive(Parser, Debug)]
+#[command(version, about = "Discord Bot for Dr. Who Trivia")]
+struct Args {
+    #[clap(subcommand)]
+    command: Option<Subcmd>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Subcmd {
+    HelpBot,
+    Verify,
+}
+// Prepares commands to be deployed to the Discord API
 fn prepare_commands() -> Vec<CreateCommand> {
     let mut cmds: Vec<CreateCommand> = Vec::new();
     // Quote command
@@ -45,329 +120,223 @@ fn prepare_commands() -> Vec<CreateCommand> {
     let episode_cmd = CreateCommand::new("episode")
         .description("Search for a specific Doctor Who episode")
         .add_option(episode_cmd_option);
+
+    // Points command
+    let points = CreateCommand::new("points")
+        .description("Shows the number of points user have on this guild");
     cmds.push(quote_cmd);
     cmds.push(doctor_cmd);
     cmds.push(episode_cmd);
+    cmds.push(points);
     cmds
 }
 
-fn quote_cmd_response() -> CreateInteractionResponse {
-    let dir = fs::read_to_string("quotes.json");
-    let mut quote: Quote;
-    // Default quote in case the file quotes.json does not exist
-    quote = Quote {
-        quote: String::from("quote_not_found"),
-        author: String::from("author_not_found"),
-    };
-    let quotes: Vec<Quote>;
-    match dir {
-        Ok(body) => {
-            quotes = serde_json::from_str(&body).expect("Failed to parse json");
-            let mut rng = rand::thread_rng();
-            let n1 = rng.gen_range(0..quotes.len());
-            quote = quotes[n1].clone();
-        }
-        Err(_) => {
-            println!("Quotes file not found");
-        }
-    }
-    // Creare embed quote
-    let rsp_embed = CreateEmbed::new()
-        .title(quote.author)
-        .description(quote.quote);
-    let rsp = CreateInteractionResponseMessage::new().add_embed(rsp_embed);
-    CreateInteractionResponse::Message(rsp)
-}
-
-async fn doctor_cmd_response(option: u8, ctx: &Context) -> EditInteractionResponse {
-    // API key
-    let api_key = env::var("RAPID_API").expect("Expected a token in the environment");
-
-    // Preparing search string
-    let mut to_search = String::from("doctor who ");
-    let numb_as_str: [String; 14] = [
-        String::from("first"),
-        String::from("second"),
-        String::from("third"),
-        String::from("fourth"),
-        String::from("fifth"),
-        String::from("sixth"),
-        String::from("seventh"),
-        String::from("eighth"),
-        String::from("ninth"),
-        String::from("tenth"),
-        String::from("eleventh"),
-        String::from("twelfth"),
-        String::from("thirteenth"),
-        String::from("fourteenth"),
-    ];
-    to_search.push_str(&numb_as_str[(option - 1) as usize]);
-    to_search.push_str(" doctor");
-
-    //println!("{}", to_search);
-
-    // Payload for the http POST request
-    let payload = json!({
-        "text": &to_search,
-        "safesearch": "off",
-        "region": "wt-wt",
-        "color": "",
-        "size": "",
-        "type_image": "",
-        "layout": "",
-        "max_results": 1
-    });
-
-    // Preparing http POST request
-    let http_req = ureq::post("https://google-api31.p.rapidapi.com/imagesearch")
-        .set("content-type", "application/json")
-        .set("X-RapidAPI-Key", &api_key)
-        .set("X-RapidAPI-Host", "google-api31.p.rapidapi.com")
-        .send_json(payload);
-
-    let api_response = match http_req {
-        Ok(body) => Some(body.into_string().unwrap()),
-        Err(_) => None,
-    };
-
-    let url: &str;
-    let resp_json: Value;
-    let mut msg_content = format!(
-        "Here's a picture of the {} doctor",
-        numb_as_str[(option - 1) as usize]
-    );
-
-    if let Some(body) = api_response {
-        resp_json = serde_json::from_str(&body).expect("Failed to parse json");
-        let ok: Option<&str> = resp_json["result"][0]["image"].as_str();
-        url = match ok {
-            Some(body) => body,
-            None => {
-                // In caz ca API-ul merge, dar nu gasim nimic
-                msg_content = format!(
-                    "No image found for the {} doctor",
-                    numb_as_str[(option - 1) as usize]
-                );
-                "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d1/Image_not_available.png/640px-Image_not_available.png"
-            }
-        };
-    } else {
-        // In caz ca nu merge API-ul
-        msg_content = format!(
-            "No image found for the {} doctor",
-            numb_as_str[(option - 1) as usize]
-        );
-        url = "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d1/Image_not_available.png/640px-Image_not_available.png"
-    }
-
-    //println!("{}", url);
-    let img_req = CreateAttachment::url(&ctx.http, url).await;
-
-    let mut rsp = EditInteractionResponse::new().content(msg_content);
-    match img_req {
-        Ok(body) => {
-            rsp = rsp.new_attachment(body);
-        }
-        Err(_) => {
-            println!("Failed to get image");
-        }
-    }
-    rsp
-}
-
-async fn episode_cmd_response(name: String) -> EditInteractionResponse {
-    // API key
-    let api_key = env::var("RAPID_API").expect("Expected a token in the environment");
-
-    let conn = Connection::open("episodes.db").expect("cannot connect to db");
-    let pattern = name.replace("\n", "").replace("\r", "");
-    let search_cmd = String::from("select distinct * from episodes where title like '%")
-        + &pattern
-        + &String::from("%';");
-    let mut stmt = conn.prepare(&search_cmd).expect("could not run statement");
-    let episodes_iter = stmt
-        .query_map([], |row| {
-            Ok(Episode {
-                id: row.get(0).unwrap(),
-                title: row.get(1).unwrap(),
-                season: row.get(2).unwrap(),
-                episode: row.get(3).unwrap(),
-            })
-        })
-        .expect("cannot query");
-    let mut msg_content: String =
-        String::from("## Here are the episodes that match your search:\n");
-    for episode in episodes_iter {
-        match episode {
-            Ok(episode) => {
-                let url = format!(
-                    "https://moviesdatabase.p.rapidapi.com/titles/{}",
-                    episode.id
-                );
-                let http_req = ureq::get(&url)
-                    .set("X-RapidAPI-Key", &api_key)
-                    .set("X-RapidAPI-Host", "moviesdatabase.p.rapidapi.com");
-                let api_response = match http_req.call() {
-                    Ok(body) => Some(body.into_string().unwrap()),
-                    Err(_) => None,
-                };
-                let title = format!("__{}__: ", episode.title);
-                msg_content.push_str(&title);
-                match api_response {
-                    Some(body) => {
-                        let resp_json: Value =
-                            serde_json::from_str(&body).expect("Failed to parse json");
-                        let year: i64 = match resp_json["results"]["releaseDate"]["year"].as_i64() {
-                            Some(body) => body,
-                            None => 0,
-                        };
-                        let month: i64 = match resp_json["results"]["releaseDate"]["month"].as_i64()
-                        {
-                            Some(body) => body,
-                            None => 0,
-                        };
-                        let day: i64 = match resp_json["results"]["releaseDate"]["day"].as_i64() {
-                            Some(body) => body,
-                            None => 0,
-                        };
-                        let details = format!(
-                            " {}-{}-{}    **({}x{})**\n",
-                            year, month, day, episode.season, episode.episode
-                        );
-                        msg_content.push_str(&details);
+#[async_trait]
+impl EventHandler for Handler {
+    async fn message(&self, ctx: Context, msg: Message) {
+        let client_token = env::var("CLIENT_ID").unwrap();
+        if let Some(mut msg_reply) = msg.referenced_message {
+            if msg_reply.author.id.to_string() == client_token && msg_reply.content.contains("**Q")
+            {
+                let str = fs::read_to_string("questions.json").unwrap();
+                let questions: Vec<Question> = match serde_json::from_str(&str) {
+                    Ok(body) => body,
+                    Err(e) => {
+                        println!("Failed to parse questions.json: {}", e);
+                        return;
                     }
-                    None => {
-                        msg_content.push_str(" [no data found]");
-                        msg_content.push_str("\n");
+                };
+                for question in &questions {
+                    if question.question == msg_reply.content
+                        && question.answer == msg.content.to_ascii_lowercase()
+                    {
+                        let new_msg = msg_reply.content.replace("**", "__");
+                        // Update user points
+                        let guild_id = match msg.guild_id {
+                            Some(body) => body.to_string(),
+                            None => String::from(""),
+                        };
+                        match update_user_points(&msg.author.name, guild_id) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                println!("Failed to update user points: {}", e);
+                            }
+                        }
+                        msg_reply
+                            .edit(&ctx.http, EditMessage::new().content(new_msg))
+                            .await
+                            .unwrap_or(());
+                        // Sends trivia question
+                        sleep(Duration::from_secs(3)).await;
+                        if let Some(guild_channel_id) =
+                            msg.channel_id.to_channel(&ctx).await.unwrap().guild()
+                        {
+                            match send_trivia(&guild_channel_id, &ctx).await {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    println!("Failed to send trivia: {}", e);
+                                }
+                            }
+                        }
                     }
                 }
             }
-            Err(e) => {
-                println!("Error: {}", e);
-            }
         }
     }
-    // Preparing http POST request
-    // let http_req = ureq::get("https://google-api31.p.rapidapi.com/imagesearch")
-    //     .set("X-RapidAPI-Key", &api_key)
-    //     .set("X-RapidAPI-Host", "moviesdatabase.p.rapidapi.com");
-
-    // let mut mst_content = String::new();
-    EditInteractionResponse::new().content(msg_content)
-}
-
-struct Handler;
-
-#[async_trait]
-impl EventHandler for Handler {
-    // async fn message(&self, _ctx: Context, msg: Message) {
-    //     println!("{}: {}", msg.author.name, msg.content);
-    // }
     async fn ready(&self, ctx: Context, ready: Ready) {
         let cmds: Vec<CreateCommand> = prepare_commands();
-        let mut test_guild: GuildId;
-        // Caut serverul de test din cele unde se afla botul
-        let guild_token =
-            std::env::var("GUILD_ID").expect("Expected a guild id in the environment");
-        for guild in ready.guilds {
-            // Comenzile specifice pt guild sunt incarcate instant spre deosebire de cele globale
-            // Folosesc propriul server de test
-            if guild.id.to_string() == guild_token {
-                test_guild = guild.id;
-                test_guild
-                    .set_commands(&ctx.http, cmds.clone())
-                    .await
-                    .expect("Failed to deploy commands");
+        let res = ctx.http.create_global_commands(&cmds).await;
+        match res {
+            Ok(_) => {}
+            Err(e) => {
+                println!("Failed to deploy commands: {}", e);
             }
         }
+        let guilds = ctx.cache.guilds();
+        for guild in guilds {
+            let channels = match guild.channels(&ctx.http).await {
+                Ok(body) => body,
+                Err(e) => {
+                    println!("Failed to get channels: {}", e);
+                    continue;
+                }
+            };
+            for (_id, channel) in channels {
+                if channel.kind == ChannelType::Text && channel.name == "general" {
+                    // Sends trivia question
+                    match send_trivia(&channel, &ctx).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            println!("Failed to send trivia: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
         println!("{} is connected!", ready.user.name);
     }
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::Command(cmd) = interaction {
-            // TO-DO: change to match
-            if cmd.data.name == "quote" {
-                let response = quote_cmd_response();
-                cmd.create_response(&ctx, response)
-                    .await
-                    .expect("Failed to respond to slash command");
-            } else if cmd.data.name == "doctor" {
-                let num = cmd.data.options()[0].value.clone();
-                let mut dr_nr = 0u8;
-                match num {
-                    Integer(n) => {
-                        dr_nr = n as u8;
-                    }
-                    _ => {
-                        println!("Failed to parse doctor command");
-                    }
+            match cmd.data.name.as_str() {
+                "quote" => {
+                    let response = quote_cmd_response();
+                    cmd.create_response(&ctx, response).await.unwrap_or(());
                 }
-                cmd.defer(&ctx.http).await.expect("Failed to defer");
-                let response = doctor_cmd_response(dr_nr, &ctx).await;
-                cmd.edit_response(&ctx, response)
-                    .await
-                    .expect("Failed to respond to slash command");
-            } else if cmd.data.name == "episode" {
-                let name = cmd.data.options()[0].value.clone();
-                let mut episode_name = String::from("");
-                match name {
-                    ResolvedValue::String(s) => {
-                        episode_name = s.to_string();
+                "doctor" => {
+                    let num = cmd.data.options()[0].value.clone();
+                    let mut dr_nr = 0u8;
+                    match num {
+                        Integer(n) => {
+                            dr_nr = n as u8;
+                        }
+                        _ => {
+                            println!("Failed to parse doctor command");
+                        }
                     }
-                    _ => {
-                        println!("Failed to parse episode command");
-                    }
+                    cmd.defer(&ctx.http).await.expect("Failed to defer");
+                    let response = doctor_cmd_response(dr_nr, &ctx).await;
+                    cmd.edit_response(&ctx, response)
+                        .await
+                        .unwrap_or(serenity::all::Message::default());
                 }
-                cmd.defer(&ctx.http).await.expect("Failed to defer");
-                let response = episode_cmd_response(episode_name).await;
-                cmd.edit_response(&ctx, response)
-                    .await
-                    .expect("Failed to respond to slash command");
+                "episode" => {
+                    match cmd.defer(&ctx.http).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            println!("Failed to defer command: {}", e);
+                        }
+                    }
+                    let name = cmd.data.options()[0].value.clone();
+                    let mut episode_name = String::from("");
+                    match name {
+                        ResolvedValue::String(s) => {
+                            episode_name = s.to_string();
+                        }
+                        _ => {
+                            cmd.edit_response(
+                                &ctx,
+                                EditInteractionResponse::new()
+                                    .content("Failed to parse episode command"),
+                            )
+                            .await
+                            .unwrap_or(serenity::all::Message::default());
+                        }
+                    }
+                    let ok = episode_cmd_response(episode_name).await;
+                    let response = match ok {
+                        Ok(body) => body,
+                        Err(_) => EditInteractionResponse::new()
+                            .content("Failed to get episode, please try again later"),
+                    };
+                    cmd.edit_response(&ctx, response)
+                        .await
+                        .unwrap_or(serenity::all::Message::default());
+                }
+                "points" => {
+                    let response = match points_cmd_response(&cmd) {
+                        Ok(body) => body,
+                        Err(e) => {
+                            println!("Error: {}", e);
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Failed to get points, please try again later"),
+                            )
+                        }
+                    };
+                    cmd.create_response(&ctx, response).await.unwrap_or(());
+                }
+                _ => {}
             }
         }
     }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Episode {
-    id: String,
-    title: String,
-    season: i32,
-    episode: i32,
 }
 
 fn populate_database(conn: &Connection) {
     let read_dir = fs::read_to_string("episodes.json");
     match read_dir {
         Ok(body) => {
-            let episodes: Vec<Episode> = serde_json::from_str(&body).expect("Failed to parse json");
+            let episodes: Vec<Episode> = serde_json::from_str(&body).unwrap_or(Vec::new());
             for episode in episodes {
                 conn.execute(
                     "insert into episodes (id, title,season,episode) values (?1, ?2, ?3, ?4)",
                     params![episode.id, episode.title, episode.season, episode.episode],
                 )
-                .expect("cannot insert data");
+                .unwrap_or(0);
             }
         }
         Err(e) => {
             println!("Couldn't find episodes.json: {}", e);
         }
     }
-    let mut stmt = conn
-        .prepare("select * from episodes")
-        .expect("cannot prepare statement");
-    let episodes_iter = stmt
-        .query_map([], |row| {
-            Ok(Episode {
-                id: row.get(0).unwrap(),
-                title: row.get(1).unwrap(),
-                season: row.get(2).unwrap(),
-                episode: row.get(3).unwrap(),
-            })
+    let mut stmt: Statement<'_>;
+    match conn.prepare("select * from episodes") {
+        Ok(body) => {
+            stmt = body;
+        }
+        Err(e) => {
+            println!("couldn't populate database: {}", e);
+            return;
+        }
+    };
+    let try_episodes_iter = stmt.query_map([], |row| {
+        Ok(Episode {
+            id: row.get(0).unwrap(),
+            title: row.get(1).unwrap(),
+            season: row.get(2).unwrap(),
+            episode: row.get(3).unwrap(),
         })
-        .expect("cannot query");
+    });
+    match try_episodes_iter {
+        Ok(_) => {}
+        Err(_) => {
+            return;
+        }
+    };
+    let episodes_iter = try_episodes_iter.unwrap();
     for episode in episodes_iter {
         match episode {
-            Ok(_episode) => {
+            Ok(_) => {
                 //println!("{} {}", _episode.id, _episode.title);
             }
             Err(e) => {
@@ -376,14 +345,73 @@ fn populate_database(conn: &Connection) {
         }
     }
 }
+
+fn prepare_points_database() {
+    let conn = match Connection::open("points.db") {
+        Ok(body) => body,
+        Err(e) => {
+            println!("Couldn't connect to points database {}", e);
+            return;
+        }
+    };
+    let create = r"
+    create table if not exists points(
+        id text not null,
+        guild text not null,
+        score integer not null
+    );
+    ";
+    match conn.execute(create, ()) {
+        Ok(_) => {}
+        Err(e) => {
+            println!("Couldn't create table: {}", e);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     dotenv().ok();
 
-    // Prepare Database
-    let conn = Connection::open("episodes.db").expect("cannot connect to db");
-    conn.execute("drop table if exists episodes", [])
-        .expect("cannot reset table");
+    // Check command line arguments
+    let args = Args::parse();
+    if let Some(subcmd) = args.command {
+        match subcmd {
+            Subcmd::HelpBot => {
+                println!("K9 is the Discord Bot I've made for the Rust course project. The commands it implements are as follows:
+                - /quote: sends a random quote from the Doctor Who series
+                - /doctor n: sends a picture of the n-th doctor
+                - /episode name: searches for a specific episode
+                - /points: shows the number of points user have on this guild
+Users can also answer trivia questions by replying to the bot's messages with the correct answer. The bot will then update the user's points and send another trivia question.");
+            }
+            Subcmd::Verify => {
+                let integrity = verify_integrity();
+                if integrity == 0 {
+                    println!("✅Everything is in order");
+                } else {
+                    println!("❌{} problems found. Please fix them before starting the app", integrity);
+                    return;
+                }
+            }
+        }
+    }
+
+    // Prepare Episodes Database
+    let conn = match Connection::open("episodes.db") {
+        Ok(body) => body,
+        Err(e) => {
+            println!("Couldn't connect to episodes database {}", e);
+            return;
+        }
+    };
+    match conn.execute("drop table if exists episodes", []) {
+        Ok(_) => {}
+        Err(e) => {
+            println!("Couldn't drop table: {}", e);
+            return;
+        }
+    }
     let create = r"
     create table if not exists episodes(
         id text not null,
@@ -392,11 +420,20 @@ async fn main() {
         episode integer not null
     );
     ";
-    conn.execute(create, ()).expect("cannot create table");
+    match conn.execute(create, ()) {
+        Ok(_) => {}
+        Err(e) => {
+            println!("Couldn't create table: {}", e);
+        }
+    }
     populate_database(&conn);
 
+    //Prepare Points Database
+    prepare_points_database();
+
     // Token to connecting to Discord API
-    let token: String = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
+    let token: String =
+        env::var("DISCORD_TOKEN").expect("discord bot token should be in .env, can't start bot");
 
     // Gateway intents
     let intents: GatewayIntents = GatewayIntents::GUILDS
@@ -405,13 +442,18 @@ async fn main() {
         | GatewayIntents::GUILD_MEMBERS
         | GatewayIntents::MESSAGE_CONTENT;
 
-    let mut client: Client = Client::builder(&token, intents)
+    let mut client: Client = match Client::builder(&token, intents)
         .event_handler(Handler)
         .await
-        .expect("Err creating client");
+    {
+        Ok(body) => body,
+        Err(e) => {
+            println!("Failed to create client: {}", e);
+            return;
+        }
+    };
 
-    // Deploy chat commands to the guild
-
+    //Start the client
     if let Err(why) = client.start().await {
         println!("Client error: {:?}", why);
     }
